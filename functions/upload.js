@@ -11,6 +11,7 @@ export async function onRequestPost(context) {
         telemetryData(context);
 
         const uploadFile = formData.get('file');
+        const folderPath = formData.get('folder') || '';
         if (!uploadFile) {
             throw new Error('No file uploaded');
         }
@@ -59,6 +60,7 @@ export async function onRequestPost(context) {
                     liked: false,
                     fileName: fileName,
                     fileSize: uploadFile.size,
+                    folder: folderPath || 'root',  // 存储文件夹路径
                 }
             });
         }
