@@ -21,6 +21,7 @@
             <span class="stats" @click="handleUpload"><i class="fas fa-upload upload-icon"></i><span class="stats-text">记录数: </span>{{ Number }}</span>
           </el-tooltip>
           <input type="file" ref="fileInput" style="display: none;" multiple @change="uploadFiles">
+          <input type="file" ref="folderInput" style="display: none;" webkitdirectory directory multiple @change="uploadFolderFiles">
           <div class="actions">
             <el-tooltip content="文件类型" placement="bottom">
               <el-dropdown @command="switchFileType" :hide-on-click="false">
@@ -61,7 +62,9 @@
                 <el-dropdown-menu slot="dropdown">
                   <el-dropdown-item command="copy" :class="{ disabled: selectedFiles.length === 0 }"><i class="fas fa-link"></i> 批量复制</el-dropdown-item>
                   <el-dropdown-item command="delete" :class="{ disabled: selectedFiles.length === 0 }"><i class="fas fa-trash-alt"></i> 批量删除</el-dropdown-item>
-                  <el-dropdown-item command="download" :class="{ disabled: selectedFiles.length === 0 }"><i class="fas fa-download"></i> 批量下载</el-dropdown-item>
+                  <el-dropdown-item divided command="deleteAll"><i class="fas fa-trash"></i> 删除全部文件</el-dropdown-item>
+                  <el-dropdown-item command="deleteCurrentFolder"><i class="fas fa-folder-minus"></i> 删除当前文件夹</el-dropdown-item>
+                  <el-dropdown-item divided command="download" :class="{ disabled: selectedFiles.length === 0 }"><i class="fas fa-download"></i> 批量下载</el-dropdown-item>
                   <el-dropdown-item command="block" :class="{ disabled: selectedFiles.length === 0 }"><i class="fas fa-lock"></i> 加入黑名单</el-dropdown-item>
                   <el-dropdown-item command="unblock" :class="{ disabled: selectedFiles.length === 0 }"><i class="fas fa-unlock"></i> 加入白名单</el-dropdown-item>
                 </el-dropdown-menu>
@@ -85,7 +88,9 @@
                 <el-dropdown-menu slot="dropdown">
                   <el-dropdown-item command="selectAllInPage"><i class="fas fa-check-square"></i> 全选当前页</el-dropdown-item>
                   <el-dropdown-item command="checkBrokenFiles"><i class="fas fa-wrench"></i> 检测失效文件</el-dropdown-item>
-                  <el-dropdown-item command="editWebsites"><i class="fas fa-edit"></i> 编辑快捷方式</el-dropdown-item>
+                  <el-dropdown-item divided command="setPageSize"><i class="fas fa-list"></i> 设置显示数量</el-dropdown-item>
+                  <el-dropdown-item command="uploadFolder"><i class="fas fa-folder-open"></i> 上传文件夹</el-dropdown-item>
+                  <el-dropdown-item divided command="editWebsites"><i class="fas fa-edit"></i> 编辑快捷方式</el-dropdown-item>
                 </el-dropdown-menu>
               </el-dropdown>
             </el-tooltip>
@@ -294,14 +299,17 @@
         }
       },
       uploadConfig: {
-        maxSize: 20 * 1024 * 1024,  // 最大上传20MB
-        maxConcurrent: 3
+        maxSize: 3 * 1024 * 1024 * 1024,  // 最大上传3GB
+        maxConcurrent: 4  // 4线程并发上传
       },
         tableData: [],
         nextCursor: null,
       search: '',
+      currentFolder: 'root',  // 当前文件夹
+      folders: [],  // 文件夹列表
       currentPage: 1,
       pageSize: 15,
+      customPageSize: 15,  // 自定义显示数量
       selectedFiles: [],
       sortOption: 'dateDesc',
       filterOption: 'all',
@@ -687,13 +695,33 @@
         });
       },
       handleBatchOperation(command) {
-        if (this.selectedFiles.length === 0) { this.$message.warning('请先选择文件'); return; }
         switch (command) {
-          case 'copy': this.handleBatchCopy(); break;
-          case 'delete': this.handleBatchDelete(); break;
-          case 'download': this.handleBatchDownload(); break;
-          case 'block': this.handleBatchBlockOrUnblock('Block'); break;
-          case 'unblock': this.handleBatchBlockOrUnblock('White'); break;
+          case 'copy': 
+            if (this.selectedFiles.length === 0) { this.$message.warning('请先选择文件'); return; }
+            this.handleBatchCopy(); 
+            break;
+          case 'delete': 
+            if (this.selectedFiles.length === 0) { this.$message.warning('请先选择文件'); return; }
+            this.handleBatchDelete(); 
+            break;
+          case 'download': 
+            if (this.selectedFiles.length === 0) { this.$message.warning('请先选择文件'); return; }
+            this.handleBatchDownload(); 
+            break;
+          case 'block': 
+            if (this.selectedFiles.length === 0) { this.$message.warning('请先选择文件'); return; }
+            this.handleBatchBlockOrUnblock('Block'); 
+            break;
+          case 'unblock': 
+            if (this.selectedFiles.length === 0) { this.$message.warning('请先选择文件'); return; }
+            this.handleBatchBlockOrUnblock('White'); 
+            break;
+          case 'deleteAll': 
+            this.handleDeleteAll(); 
+            break;
+          case 'deleteCurrentFolder': 
+            this.handleDeleteCurrentFolder(); 
+            break;
         }
       },
       // 工具相关
@@ -701,6 +729,8 @@
         switch (command) {
           case 'selectAllInPage': this.selectAllInPage(); break;
           case 'checkBrokenFiles': this.checkBrokenFiles(); break;
+          case 'setPageSize': this.setPageSize(); break;
+          case 'uploadFolder': this.$refs.folderInput.click(); break;
           case 'editWebsites': this.editWebsites(); break;
         }
       },
@@ -805,6 +835,153 @@
           localStorage.setItem('quickWebsites', JSON.stringify(newSites));
           this.$message.success('保存成功');
         }).catch(() => {});
+      },
+      // 删除全部文件
+      handleDeleteAll() {
+        this.$confirm('警告：此操作将永久删除所有文件，无法恢复！请输入 "DELETE ALL" 确认执行此操作。', '危险操作', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'error',
+          inputPattern: /^DELETE ALL$/,
+          inputErrorMessage: '请输入 DELETE ALL 确认',
+          showInput: true
+        }).then(() => {
+          const loading = this.$message({ message: '正在删除所有文件...', duration: 0 });
+          fetch('./api/manage/list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+            credentials: 'include'
+          })
+            .then(r => r.json())
+            .then(result => {
+              loading.close();
+              if (result.success) {
+                this.tableData = [];
+                this.updateStats();
+                this.$message.success(result.message || '已删除所有文件');
+              } else {
+                this.$message.error(result.error || '删除失败');
+              }
+            })
+            .catch(err => {
+              loading.close();
+              this.$message.error('删除失败：' + err.message);
+            });
+        }).catch(() => this.$message.info('已取消删除'));
+      },
+      // 删除当前文件夹
+      handleDeleteCurrentFolder() {
+        this.$confirm(`确定要删除当前文件夹 "${this.currentFolder}" 的所有文件吗？`, '提示', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(() => {
+          const loading = this.$message({ message: '正在删除...', duration: 0 });
+          fetch('./api/manage/list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder: this.currentFolder }),
+            credentials: 'include'
+          })
+            .then(r => r.json())
+            .then(result => {
+              loading.close();
+              if (result.success) {
+                this.tableData = this.tableData.filter(f => (f.metadata?.folder || 'root') !== this.currentFolder);
+                this.updateStats();
+                this.$message.success(result.message || '删除成功');
+              } else {
+                this.$message.error(result.error || '删除失败');
+              }
+            })
+            .catch(err => {
+              loading.close();
+              this.$message.error('删除失败：' + err.message);
+            });
+        }).catch(() => this.$message.info('已取消删除'));
+      },
+      // 设置显示数量
+      setPageSize() {
+        this.$prompt('请输入每页显示的文件数量（1-500）', '设置显示数量', {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          inputValue: this.customPageSize,
+          inputPattern: /^[1-9]\d{0,2}$/,
+          inputErrorMessage: '请输入1-500的整数'
+        }).then(({ value }) => {
+          const size = parseInt(value);
+          if (size >= 1 && size <= 500) {
+            this.customPageSize = size;
+            this.pageSize = size;
+            localStorage.setItem('customPageSize', size);
+            this.$message.success(`已设置每页显示 ${size} 个文件`);
+          } else {
+            this.$message.error('数量范围不合法');
+          }
+        }).catch(() => {});
+      },
+      // 上传文件夹
+      async uploadFolderFiles(event) {
+        const files = Array.from(event.target.files || []);
+        if (!files.length) return;
+
+        const config = this.uploadConfig;
+        const valid = [], invalid = [];
+        files.forEach(file => {
+          (file.size <= config.maxSize ? valid : invalid).push(file);
+        });
+
+        if(invalid.length) {
+          this.$message.error(`${invalid.length} 个文件超过${config.maxSize/1024/1024/1024}GB`);
+        }
+        if(!valid.length) {
+          this.$message.info('没有符合条件的文件');
+          event.target.value = '';
+          return;
+        }
+
+        try {
+          await this.$confirm(`确定要上传这 ${valid.length} 个文件吗？`, '提示', { type: 'warning' });
+          const loading = this.$message({ message: `上传中... 0/${valid.length}`, duration: 0 });
+          let [successCount, failed] = [0, []];
+
+          const upload = async file => {
+            try {
+              const formData = new FormData();
+              formData.append('file', file);
+              const path = file.webkitRelativePath || file.name;
+              const folder = path.split('/').slice(0, -1).join('/');
+              if (folder) formData.append('folder', folder);
+
+              const res = await fetch(`${this.baseURL}/upload`, {
+                method: 'POST',
+                body: formData,
+                credentials: 'include'
+              });
+              const data = await res.json();
+              if (!res.ok || (Array.isArray(data) && data[0]?.error)) {
+                throw new Error(data[0]?.error || '上传失败');
+              }
+              successCount++;
+              loading.message = `上传中... ${successCount}/${valid.length}`;
+            } catch (err) {
+              failed.push(`${file.name} (${err.message})`);
+            }
+          };
+
+          for (let i = 0; i < valid.length; i += config.maxConcurrent) {
+            await Promise.all(valid.slice(i, i + config.maxConcurrent).map(upload));
+          }
+
+          loading.close();
+          successCount && this.$message.success(`成功上传 ${successCount} 个文件`);
+          failed.length && this.$message.error(`上传失败: ${failed.slice(0,3).join(', ')}`);
+          this.refreshFileList();
+        } catch {
+          this.$message.info('已取消上传');
+        }
+        event.target.value = '';
       },
       getFileIcon(filename) {
         const ext = filename.split('.').pop().toLowerCase();
